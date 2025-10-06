@@ -33,7 +33,7 @@ export const Navbar = ({ user }: NavbarProps) => {
           <Link to="/" className="flex items-center gap-3">
             <img src={logo} alt="StockAI" className="h-10" />
             <span className="text-xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-              StockAI
+              Stock Price Prediction using AI
             </span>
           </Link>
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
+import { TrendingUp } from "lucide-react";
 
 interface TrendChartProps {
   selectedStock: string | null;
@@ -55,7 +56,13 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
 
   return (
     <div className="w-full h-80">
-      {data.length > 0 ? (
+      {selectedStock && (
+        <div className="mb-4 p-3 bg-primary/10 rounded-lg border border-primary/20">
+          <p className="text-sm text-muted-foreground">Currently analyzing</p>
+          <p className="text-lg font-semibold text-primary">{selectedStock}</p>
+        </div>
+      )}
+      {data.length > 0 && selectedStock ? (
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>
             <defs>
@@ -100,8 +107,9 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
           </AreaChart>
         </ResponsiveContainer>
       ) : (
-        <div className="flex items-center justify-center h-full text-muted-foreground">
-          Search for a stock to view trends and predictions
+        <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
+          <TrendingUp className="h-12 w-12 opacity-20" />
+          <p className="text-center">Search for a stock above to view AI-powered trends and predictions</p>
         </div>
       )}
     </div>
