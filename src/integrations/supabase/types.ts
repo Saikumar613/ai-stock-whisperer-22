@@ -70,6 +70,78 @@ export type Database = {
         }
         Relationships: []
       }
+      stock_data: {
+        Row: {
+          close_price: number
+          created_at: string
+          date: string
+          high_price: number
+          id: string
+          low_price: number
+          open_price: number
+          symbol: string
+          volume: number
+        }
+        Insert: {
+          close_price: number
+          created_at?: string
+          date: string
+          high_price: number
+          id?: string
+          low_price: number
+          open_price: number
+          symbol: string
+          volume: number
+        }
+        Update: {
+          close_price?: number
+          created_at?: string
+          date?: string
+          high_price?: number
+          id?: string
+          low_price?: number
+          open_price?: number
+          symbol?: string
+          volume?: number
+        }
+        Relationships: []
+      }
+      stock_predictions: {
+        Row: {
+          actual_price: number | null
+          confidence: number | null
+          created_at: string
+          id: string
+          model_type: string
+          predicted_price: number
+          prediction_date: string
+          symbol: string
+          user_id: string
+        }
+        Insert: {
+          actual_price?: number | null
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          model_type: string
+          predicted_price: number
+          prediction_date?: string
+          symbol: string
+          user_id: string
+        }
+        Update: {
+          actual_price?: number | null
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          model_type?: string
+          predicted_price?: number
+          prediction_date?: string
+          symbol?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       watchlist: {
         Row: {
           added_at: string | null
