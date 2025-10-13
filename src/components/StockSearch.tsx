@@ -1,9 +1,16 @@
+/**
+ * FRONTEND COMPONENT
+ * Location: frontend/src/components/StockSearch.tsx
+ * Tool: VS Code + Node.js (React)
+ */
+
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { fetchStockData } from "@/services/stockApi";
 
 interface StockSearchProps {
   onSelectStock: (symbol: string) => void;
@@ -20,16 +27,17 @@ export const StockSearch = ({ onSelectStock }: StockSearchProps) => {
 
     setLoading(true);
     try {
-      // In a real app, this would call a stock API
+      // Fetch real stock data from Flask backend
+      const stockData = await fetchStockData(searchQuery.toUpperCase());
       onSelectStock(searchQuery.toUpperCase());
       toast({
-        title: "Stock Selected",
-        description: `Viewing data for ${searchQuery.toUpperCase()}`,
+        title: "Stock Data Loaded",
+        description: `Current price: $${stockData.current_price.toFixed(2)}`,
       });
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Error",
-        description: "Failed to search stock",
+        description: error.message || "Failed to fetch stock data",
         variant: "destructive",
       });
     } finally {

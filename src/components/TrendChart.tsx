@@ -1,6 +1,23 @@
+/**
+ * FRONTEND COMPONENT
+ * Location: frontend/src/components/TrendChart.tsx
+ * Tool: VS Code + Node.js (React)
+ */
+
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
-import { TrendingUp } from "lucide-react";
+import { TrendingUp, Loader2 } from "lucide-react";
+import { fetchStockData, getPrediction } from "@/services/stockApi";
+import { supabase } from "@/integrations/supabase/client";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface TrendChartProps {
   selectedStock: string | null;
@@ -8,32 +25,75 @@ interface TrendChartProps {
 
 export const TrendChart = ({ selectedStock }: TrendChartProps) => {
   const [data, setData] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [predicting, setPredicting] = useState(false);
+  const [modelType, setModelType] = useState<'SVM' | 'DecisionTree' | 'RandomForest' | 'LSTM'>('RandomForest');
+  const [prediction, setPrediction] = useState<number | null>(null);
+  const { toast } = useToast();
 
   useEffect(() => {
-    // Generate sample data - in real app, this would fetch from API
-    const generateData = () => {
-      const days = 30;
-      const basePrice = 100 + Math.random() * 100;
-      const newData = [];
+    if (!selectedStock) return;
 
-      for (let i = 0; i < days; i++) {
-        const date = new Date();
-        date.setDate(date.getDate() - (days - i));
-        const variance = (Math.random() - 0.5) * 10;
-        const price = basePrice + variance + (i * 0.5);
-
-        newData.push({
-          date: date.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          price: parseFloat(price.toFixed(2)),
-          prediction: parseFloat((price + (Math.random() - 0.4) * 5).toFixed(2)),
+    const loadStockData = async () => {
+      setLoading(true);
+      setPrediction(null);
+      try {
+        const stockData = await fetchStockData(selectedStock);
+        
+        // Transform data for chart
+        const chartData = stockData.data.slice(-30).map((item: any) => ({
+          date: new Date(item.Date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+          price: parseFloat(item.Close.toFixed(2)),
+        }));
+        
+        setData(chartData);
+      } catch (error: any) {
+        toast({
+          title: "Error loading stock data",
+          description: error.message,
+          variant: "destructive",
         });
+      } finally {
+        setLoading(false);
       }
-
-      return newData;
     };
 
-    setData(generateData());
+    loadStockData();
   }, [selectedStock]);
+
+  const handlePredict = async () => {
+    if (!selectedStock) return;
+
+    setPredicting(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        toast({
+          title: "Authentication required",
+          description: "Please sign in to use predictions",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const predictionData = await getPrediction(selectedStock, user.id, modelType);
+      setPrediction(predictionData.predicted_price);
+      
+      toast({
+        title: "Prediction Complete",
+        description: `${modelType} predicts $${predictionData.predicted_price.toFixed(2)} (${predictionData.confidence.toFixed(1)}% confidence)`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Prediction failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setPredicting(false);
+    }
+  };
 
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
@@ -55,14 +115,53 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
   };
 
   return (
-    <div className="w-full h-80">
+    <div className="w-full">
       {selectedStock && (
-        <div className="mb-4 p-3 bg-primary/10 rounded-lg border border-primary/20">
-          <p className="text-sm text-muted-foreground">Currently analyzing</p>
-          <p className="text-lg font-semibold text-primary">{selectedStock}</p>
+        <div className="mb-4 p-4 bg-primary/10 rounded-lg border border-primary/20">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm text-muted-foreground">Currently analyzing</p>
+              <p className="text-lg font-semibold text-primary">{selectedStock}</p>
+            </div>
+            {prediction && (
+              <div className="text-right">
+                <p className="text-sm text-muted-foreground">AI Prediction</p>
+                <p className="text-xl font-bold text-accent">${prediction.toFixed(2)}</p>
+              </div>
+            )}
+          </div>
+          
+          <div className="flex gap-2">
+            <Select value={modelType} onValueChange={(value: any) => setModelType(value)}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Model" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="RandomForest">Random Forest</SelectItem>
+                <SelectItem value="SVM">SVM</SelectItem>
+                <SelectItem value="DecisionTree">Decision Tree</SelectItem>
+                <SelectItem value="LSTM">LSTM</SelectItem>
+              </SelectContent>
+            </Select>
+            
+            <Button 
+              onClick={handlePredict} 
+              disabled={predicting || loading}
+              className="bg-gradient-primary"
+            >
+              {predicting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {predicting ? 'Predicting...' : 'Run ML Prediction'}
+            </Button>
+          </div>
         </div>
       )}
-      {data.length > 0 && selectedStock ? (
+      
+      <div className="h-80">
+        {loading ? (
+          <div className="flex items-center justify-center h-full">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
+        ) : data.length > 0 && selectedStock ? (
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>
             <defs>
@@ -95,23 +194,15 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
               fill="url(#colorPrice)"
               name="Actual Price"
             />
-            <Area
-              type="monotone"
-              dataKey="prediction"
-              stroke="hsl(var(--chart-secondary))"
-              strokeWidth={2}
-              strokeDasharray="5 5"
-              fill="url(#colorPrediction)"
-              name="AI Prediction"
-            />
           </AreaChart>
-        </ResponsiveContainer>
-      ) : (
-        <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
-          <TrendingUp className="h-12 w-12 opacity-20" />
-          <p className="text-center">Search for a stock above to view AI-powered trends and predictions</p>
-        </div>
-      )}
+          </ResponsiveContainer>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
+            <TrendingUp className="h-12 w-12 opacity-20" />
+            <p className="text-center">Search for a stock above to view AI-powered trends and predictions</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
