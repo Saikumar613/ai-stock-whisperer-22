@@ -18,8 +18,9 @@ from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
-from pymongo import MongoClient
+from pymongo import MongoClient, ASCENDING, DESCENDING
 from bson import ObjectId
+import json
 
 # Load environment variables
 load_dotenv()
@@ -29,102 +30,322 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
 
 # ============================================
-# MONGODB CONNECTION
+# MONGODB CONNECTION & AUTO-SETUP
 # ============================================
 
-MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/stock_prediction')
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/stockDB')
 
-try:
-    client = MongoClient(MONGODB_URI)
-    db = client.get_database()
-    
-    # Collections
-    stock_data_collection = db.stock_data
-    stock_predictions_collection = db.stock_predictions
-    
-    print("✅ Connected to MongoDB successfully!")
-except Exception as e:
-    print(f"❌ MongoDB connection failed: {str(e)}")
+def setup_database():
+    """
+    Connect to MongoDB and automatically create collections with indexes.
+    Collections are created automatically when first document is inserted,
+    but we also create indexes for better performance.
+    """
+    try:
+        client = MongoClient(MONGODB_URI)
+        db = client.get_database()
+        
+        print(f"✅ Connected to MongoDB: {db.name}")
+        
+        # Define collections - MongoDB creates them automatically on first insert
+        collections = {
+            'users': db.users,
+            'profiles': db.profiles,
+            'watchlist': db.watchlist,
+            'stock_data': db.stock_data,
+            'stock_predictions': db.stock_predictions,
+            'chat_messages': db.chat_messages
+        }
+        
+        # Create indexes for better query performance
+        # These are idempotent - safe to run multiple times
+        
+        # Users collection indexes
+        collections['users'].create_index('email', unique=True, sparse=True)
+        
+        # Profiles collection indexes
+        collections['profiles'].create_index('user_id', unique=True)
+        
+        # Watchlist collection indexes
+        collections['watchlist'].create_index([('user_id', ASCENDING), ('symbol', ASCENDING)], unique=True)
+        collections['watchlist'].create_index('user_id')
+        
+        # Stock data collection indexes
+        collections['stock_data'].create_index([('symbol', ASCENDING), ('date', DESCENDING)])
+        collections['stock_data'].create_index('symbol')
+        
+        # Stock predictions collection indexes
+        collections['stock_predictions'].create_index([('user_id', ASCENDING), ('created_at', DESCENDING)])
+        collections['stock_predictions'].create_index('symbol')
+        
+        # Chat messages collection indexes
+        collections['chat_messages'].create_index([('user_id', ASCENDING), ('created_at', ASCENDING)])
+        
+        print("✅ Database indexes created successfully!")
+        print(f"📦 Available collections: {db.list_collection_names()}")
+        
+        return client, db, collections
+        
+    except Exception as e:
+        print(f"❌ MongoDB connection failed: {str(e)}")
+        print("💡 Make sure MongoDB is running: mongod --dbpath /path/to/data")
+        raise e
+
+# Initialize database connection
+client, db, collections = setup_database()
+
+# ============================================
+# STOCK SYMBOLS DATABASE
+# ============================================
+
+STOCK_SYMBOLS = {
+    "Technology": [
+        {"symbol": "AAPL", "name": "Apple Inc."},
+        {"symbol": "MSFT", "name": "Microsoft Corporation"},
+        {"symbol": "GOOGL", "name": "Alphabet Inc."},
+        {"symbol": "AMZN", "name": "Amazon.com Inc."},
+        {"symbol": "META", "name": "Meta Platforms Inc."},
+        {"symbol": "NVDA", "name": "NVIDIA Corporation"},
+        {"symbol": "TSLA", "name": "Tesla Inc."},
+        {"symbol": "AMD", "name": "Advanced Micro Devices"},
+        {"symbol": "INTC", "name": "Intel Corporation"},
+        {"symbol": "CRM", "name": "Salesforce Inc."},
+        {"symbol": "ORCL", "name": "Oracle Corporation"},
+        {"symbol": "ADBE", "name": "Adobe Inc."},
+        {"symbol": "CSCO", "name": "Cisco Systems"},
+        {"symbol": "IBM", "name": "IBM Corporation"},
+        {"symbol": "NFLX", "name": "Netflix Inc."},
+    ],
+    "Finance": [
+        {"symbol": "JPM", "name": "JPMorgan Chase"},
+        {"symbol": "BAC", "name": "Bank of America"},
+        {"symbol": "WFC", "name": "Wells Fargo"},
+        {"symbol": "GS", "name": "Goldman Sachs"},
+        {"symbol": "MS", "name": "Morgan Stanley"},
+        {"symbol": "V", "name": "Visa Inc."},
+        {"symbol": "MA", "name": "Mastercard Inc."},
+        {"symbol": "AXP", "name": "American Express"},
+        {"symbol": "C", "name": "Citigroup Inc."},
+        {"symbol": "BLK", "name": "BlackRock Inc."},
+    ],
+    "Healthcare": [
+        {"symbol": "JNJ", "name": "Johnson & Johnson"},
+        {"symbol": "UNH", "name": "UnitedHealth Group"},
+        {"symbol": "PFE", "name": "Pfizer Inc."},
+        {"symbol": "MRK", "name": "Merck & Co."},
+        {"symbol": "ABBV", "name": "AbbVie Inc."},
+        {"symbol": "LLY", "name": "Eli Lilly"},
+        {"symbol": "TMO", "name": "Thermo Fisher"},
+        {"symbol": "ABT", "name": "Abbott Laboratories"},
+        {"symbol": "BMY", "name": "Bristol-Myers Squibb"},
+        {"symbol": "AMGN", "name": "Amgen Inc."},
+    ],
+    "Consumer": [
+        {"symbol": "WMT", "name": "Walmart Inc."},
+        {"symbol": "PG", "name": "Procter & Gamble"},
+        {"symbol": "KO", "name": "Coca-Cola Company"},
+        {"symbol": "PEP", "name": "PepsiCo Inc."},
+        {"symbol": "COST", "name": "Costco Wholesale"},
+        {"symbol": "HD", "name": "Home Depot"},
+        {"symbol": "MCD", "name": "McDonald's Corp."},
+        {"symbol": "NKE", "name": "Nike Inc."},
+        {"symbol": "SBUX", "name": "Starbucks Corp."},
+        {"symbol": "TGT", "name": "Target Corporation"},
+    ],
+    "Energy": [
+        {"symbol": "XOM", "name": "Exxon Mobil"},
+        {"symbol": "CVX", "name": "Chevron Corporation"},
+        {"symbol": "COP", "name": "ConocoPhillips"},
+        {"symbol": "SLB", "name": "Schlumberger"},
+        {"symbol": "EOG", "name": "EOG Resources"},
+    ],
+    "Indices": [
+        {"symbol": "^GSPC", "name": "S&P 500"},
+        {"symbol": "^DJI", "name": "Dow Jones"},
+        {"symbol": "^IXIC", "name": "NASDAQ"},
+        {"symbol": "^RUT", "name": "Russell 2000"},
+    ],
+    "Indian": [
+        {"symbol": "RELIANCE.NS", "name": "Reliance Industries"},
+        {"symbol": "TCS.NS", "name": "Tata Consultancy Services"},
+        {"symbol": "INFY.NS", "name": "Infosys Limited"},
+        {"symbol": "HDFCBANK.NS", "name": "HDFC Bank"},
+        {"symbol": "ICICIBANK.NS", "name": "ICICI Bank"},
+        {"symbol": "WIPRO.NS", "name": "Wipro Limited"},
+        {"symbol": "BHARTIARTL.NS", "name": "Bharti Airtel"},
+        {"symbol": "ITC.NS", "name": "ITC Limited"},
+        {"symbol": "SBIN.NS", "name": "State Bank of India"},
+        {"symbol": "TATAMOTORS.NS", "name": "Tata Motors"},
+    ]
+}
+
+def get_all_symbols():
+    """Get flat list of all symbols"""
+    symbols = []
+    for sector, stocks in STOCK_SYMBOLS.items():
+        for stock in stocks:
+            symbols.append({**stock, "sector": sector})
+    return symbols
+
+def search_symbols(query):
+    """Search symbols by name or symbol"""
+    query = query.upper()
+    results = []
+    for sector, stocks in STOCK_SYMBOLS.items():
+        for stock in stocks:
+            if query in stock['symbol'].upper() or query in stock['name'].upper():
+                results.append({**stock, "sector": sector})
+    return results[:20]  # Limit results
 
 # ============================================
 # HELPER FUNCTIONS
 # ============================================
 
-def save_stock_data(symbol, data):
-    """Save stock data to MongoDB"""
+def fetch_stock_data_safe(symbol, period="1y"):
+    """
+    Safely fetch stock data from Yahoo Finance.
+    yfinance is a Python library that scrapes Yahoo Finance - no API key needed!
+    """
     try:
-        stock_data_collection.insert_one({
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period=period)
+        
+        if hist.empty:
+            return None, "No data found for symbol"
+        
+        # Get additional info
+        info = stock.info
+        
+        # Format data
+        data = []
+        for index, row in hist.iterrows():
+            data.append({
+                'date': index.strftime('%Y-%m-%d'),
+                'open': float(row['Open']),
+                'high': float(row['High']),
+                'low': float(row['Low']),
+                'close': float(row['Close']),
+                'volume': int(row['Volume'])
+            })
+        
+        return {
             'symbol': symbol,
-            'data': data,
-            'created_at': datetime.now()
-        })
-        return True
+            'name': info.get('longName', info.get('shortName', symbol)),
+            'sector': info.get('sector', 'Unknown'),
+            'current_price': float(hist['Close'].iloc[-1]),
+            'previous_close': info.get('previousClose', float(hist['Close'].iloc[-2]) if len(hist) > 1 else None),
+            'market_cap': info.get('marketCap', None),
+            'pe_ratio': info.get('trailingPE', None),
+            'data': data
+        }, None
+        
     except Exception as e:
-        print(f"Error saving stock data: {str(e)}")
-        return False
+        return None, str(e)
 
-def save_prediction(symbol, user_id, prediction_data):
-    """Save prediction to MongoDB"""
-    try:
-        stock_predictions_collection.insert_one({
-            'symbol': symbol,
-            'user_id': user_id,
-            'predicted_price': prediction_data['predicted_price'],
-            'current_price': prediction_data['current_price'],
-            'confidence': prediction_data['confidence'],
-            'model_type': prediction_data['model_type'],
-            'created_at': datetime.now()
-        })
-        return True
-    except Exception as e:
-        print(f"Error saving prediction: {str(e)}")
-        return False
+def serialize_doc(doc):
+    """Convert MongoDB document to JSON-serializable dict"""
+    if doc is None:
+        return None
+    doc['_id'] = str(doc['_id'])
+    return doc
 
 # ============================================
-# API ENDPOINTS
+# API ENDPOINTS - STOCK DATA
 # ============================================
+
+@app.route('/api/symbols', methods=['GET'])
+def get_symbols():
+    """Get all available stock symbols"""
+    sector = request.args.get('sector')
+    search = request.args.get('search')
+    
+    if search:
+        return jsonify(search_symbols(search)), 200
+    
+    if sector and sector in STOCK_SYMBOLS:
+        return jsonify(STOCK_SYMBOLS[sector]), 200
+    
+    return jsonify(get_all_symbols()), 200
+
+@app.route('/api/sectors', methods=['GET'])
+def get_sectors():
+    """Get all available sectors"""
+    sectors = []
+    for sector, stocks in STOCK_SYMBOLS.items():
+        sectors.append({
+            'name': sector,
+            'count': len(stocks)
+        })
+    return jsonify(sectors), 200
 
 @app.route('/api/get_stock_data/<symbol>', methods=['GET'])
 def get_stock_data(symbol):
     """
-    Fetch historical stock data from Yahoo Finance
-    Example: GET /api/get_stock_data/AAPL
+    Fetch stock data from Yahoo Finance and save to MongoDB.
+    This automatically creates the stock_data collection!
     """
     try:
-        # Fetch data from Yahoo Finance
-        stock = yf.Ticker(symbol)
-        hist = stock.history(period="1y")
+        period = request.args.get('period', '1y')
         
-        if hist.empty:
-            return jsonify({'error': 'Stock symbol not found'}), 404
+        # Fetch from Yahoo Finance using yfinance library
+        stock_data, error = fetch_stock_data_safe(symbol, period)
         
-        # Format data for frontend
-        stock_data = {
-            'symbol': symbol,
-            'history': hist.reset_index().to_dict('records'),
-            'current_price': float(hist['Close'].iloc[-1])
-        }
+        if error:
+            return jsonify({'error': error}), 404
         
-        # Save to MongoDB
-        save_stock_data(symbol, stock_data['history'])
+        # Save to MongoDB (this auto-creates collection if it doesn't exist!)
+        collections['stock_data'].update_one(
+            {'symbol': symbol, 'date': datetime.now().strftime('%Y-%m-%d')},
+            {
+                '$set': {
+                    'symbol': symbol,
+                    'data': stock_data['data'],
+                    'current_price': stock_data['current_price'],
+                    'fetched_at': datetime.now()
+                }
+            },
+            upsert=True  # Insert if doesn't exist, update if exists
+        )
+        
+        print(f"📊 Saved stock data for {symbol} to MongoDB")
         
         return jsonify(stock_data), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/search/<query>', methods=['GET'])
+def search_stocks(query):
+    """Search for stocks by name or symbol"""
+    results = search_symbols(query)
+    
+    # Enrich with live data for top 5 results
+    enriched = []
+    for stock in results[:5]:
+        try:
+            data, _ = fetch_stock_data_safe(stock['symbol'], '5d')
+            if data:
+                enriched.append({
+                    **stock,
+                    'current_price': data['current_price'],
+                    'name': data['name']
+                })
+            else:
+                enriched.append(stock)
+        except:
+            enriched.append(stock)
+    
+    return jsonify(enriched + results[5:]), 200
+
+# ============================================
+# API ENDPOINTS - PREDICTIONS
+# ============================================
 
 @app.route('/api/predict', methods=['POST'])
 def predict():
     """
-    Predict stock price using ML models
-    
-    Request Body:
-    {
-        "symbol": "AAPL",
-        "user_id": "user123",
-        "model_type": "RandomForest"  // Optional: SVM, DecisionTree, RandomForest, LSTM
-    }
+    Predict stock price using ML models.
+    Saves prediction to MongoDB automatically!
     """
     try:
         data = request.get_json()
@@ -135,19 +356,18 @@ def predict():
         if not symbol:
             return jsonify({'error': 'Symbol is required'}), 400
         
-        # Fetch historical data
+        # Fetch historical data from Yahoo Finance
         stock = yf.Ticker(symbol)
         hist = stock.history(period="1y")
         
         if hist.empty:
             return jsonify({'error': 'Stock symbol not found'}), 404
         
-        # Prepare data
+        # Prepare data for ML
         df = hist[['Close']].copy()
         df['Prediction'] = df['Close'].shift(-1)
         df = df.dropna()
         
-        # Features and target
         X = np.array(df[['Close']])
         y = np.array(df['Prediction'])
         
@@ -166,58 +386,258 @@ def predict():
             model = SVR(kernel='rbf', C=1e3, gamma=0.1)
         elif model_type == 'DecisionTree':
             model = DecisionTreeRegressor(random_state=42)
-        elif model_type == 'RandomForest':
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
-        elif model_type == 'LSTM':
-            # For LSTM, use RandomForest as fallback (LSTM requires tensorflow)
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
-            model_type = 'RandomForest'  # Update model type
-        else:
+        else:  # RandomForest (default)
             model = RandomForestRegressor(n_estimators=100, random_state=42)
         
-        # Train model
         model.fit(X_train_scaled, y_train)
         
-        # Make prediction for next day
+        # Predict next day price
         last_price = np.array([[hist['Close'].iloc[-1]]])
         last_price_scaled = scaler.transform(last_price)
         prediction = model.predict(last_price_scaled)[0]
         
-        # Calculate confidence (simplified)
+        # Calculate confidence
         train_score = model.score(X_train_scaled, y_train)
         test_score = model.score(X_test_scaled, y_test)
-        confidence = (train_score + test_score) / 2
+        confidence = max(0, min(1, (train_score + test_score) / 2))
         
-        # Prepare result
+        current_price = float(hist['Close'].iloc[-1])
+        predicted_price = float(prediction)
+        price_change = ((predicted_price - current_price) / current_price) * 100
+        
+        # Determine recommendation
+        if price_change > 2:
+            recommendation = 'BUY'
+        elif price_change < -2:
+            recommendation = 'SELL'
+        else:
+            recommendation = 'HOLD'
+        
         result = {
-            'predicted_price': float(prediction),
-            'current_price': float(hist['Close'].iloc[-1]),
-            'confidence': float(confidence),
+            'symbol': symbol,
+            'predicted_price': round(predicted_price, 2),
+            'current_price': round(current_price, 2),
+            'price_change_percent': round(price_change, 2),
+            'confidence': round(confidence * 100, 1),
             'model_type': model_type,
-            'symbol': symbol
+            'recommendation': recommendation,
+            'prediction_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Save prediction to MongoDB
-        save_prediction(symbol, user_id, result)
+        # Save prediction to MongoDB (auto-creates collection!)
+        collections['stock_predictions'].insert_one({
+            'user_id': user_id,
+            'symbol': symbol,
+            'predicted_price': predicted_price,
+            'current_price': current_price,
+            'confidence': confidence,
+            'model_type': model_type,
+            'recommendation': recommendation,
+            'created_at': datetime.now()
+        })
+        
+        print(f"🔮 Saved prediction for {symbol} to MongoDB")
         
         return jsonify(result), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/predictions/<user_id>', methods=['GET'])
+def get_user_predictions(user_id):
+    """Get prediction history for a user"""
+    try:
+        predictions = list(
+            collections['stock_predictions']
+            .find({'user_id': user_id})
+            .sort('created_at', DESCENDING)
+            .limit(50)
+        )
+        
+        return jsonify([serialize_doc(p) for p in predictions]), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================
+# API ENDPOINTS - WATCHLIST
+# ============================================
+
+@app.route('/api/watchlist/<user_id>', methods=['GET'])
+def get_watchlist(user_id):
+    """Get user's watchlist"""
+    try:
+        watchlist = list(collections['watchlist'].find({'user_id': user_id}))
+        return jsonify([serialize_doc(w) for w in watchlist]), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/watchlist', methods=['POST'])
+def add_to_watchlist():
+    """Add stock to watchlist"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        symbol = data.get('symbol')
+        company_name = data.get('company_name', symbol)
+        
+        if not user_id or not symbol:
+            return jsonify({'error': 'user_id and symbol required'}), 400
+        
+        # Check if already exists
+        existing = collections['watchlist'].find_one({
+            'user_id': user_id,
+            'symbol': symbol
+        })
+        
+        if existing:
+            return jsonify({'error': 'Already in watchlist'}), 400
+        
+        # Add to watchlist (auto-creates collection!)
+        result = collections['watchlist'].insert_one({
+            'user_id': user_id,
+            'symbol': symbol,
+            'company_name': company_name,
+            'added_at': datetime.now()
+        })
+        
+        print(f"📌 Added {symbol} to watchlist for user {user_id}")
+        
+        return jsonify({
+            'message': 'Added to watchlist',
+            'id': str(result.inserted_id)
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/watchlist/<user_id>/<symbol>', methods=['DELETE'])
+def remove_from_watchlist(user_id, symbol):
+    """Remove stock from watchlist"""
+    try:
+        result = collections['watchlist'].delete_one({
+            'user_id': user_id,
+            'symbol': symbol
+        })
+        
+        if result.deleted_count == 0:
+            return jsonify({'error': 'Not found in watchlist'}), 404
+        
+        return jsonify({'message': 'Removed from watchlist'}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================
+# API ENDPOINTS - CHAT MESSAGES
+# ============================================
+
+@app.route('/api/chat/<user_id>', methods=['GET'])
+def get_chat_history(user_id):
+    """Get chat history for a user"""
+    try:
+        messages = list(
+            collections['chat_messages']
+            .find({'user_id': user_id})
+            .sort('created_at', ASCENDING)
+            .limit(100)
+        )
+        
+        return jsonify([serialize_doc(m) for m in messages]), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/chat', methods=['POST'])
+def save_chat_message():
+    """Save a chat message"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        content = data.get('content')
+        role = data.get('role', 'user')
+        
+        if not user_id or not content:
+            return jsonify({'error': 'user_id and content required'}), 400
+        
+        result = collections['chat_messages'].insert_one({
+            'user_id': user_id,
+            'content': content,
+            'role': role,
+            'created_at': datetime.now()
+        })
+        
+        return jsonify({
+            'message': 'Message saved',
+            'id': str(result.inserted_id)
+        }), 201
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================
+# HEALTH CHECK & DATABASE INFO
+# ============================================
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Check if the API is running"""
-    return jsonify({'status': 'healthy', 'database': 'MongoDB'}), 200
+    """Check API and database health"""
+    try:
+        # Check MongoDB connection
+        client.admin.command('ping')
+        
+        # Get collection stats
+        collection_stats = {}
+        for name in db.list_collection_names():
+            collection_stats[name] = db[name].count_documents({})
+        
+        return jsonify({
+            'status': 'healthy',
+            'database': db.name,
+            'collections': collection_stats,
+            'message': 'Flask API + MongoDB is running!'
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
 
+@app.route('/api/db-info', methods=['GET'])
+def database_info():
+    """Get detailed database information"""
+    try:
+        info = {
+            'database_name': db.name,
+            'collections': [],
+            'connection_string': MONGODB_URI.split('@')[-1] if '@' in MONGODB_URI else MONGODB_URI
+        }
+        
+        for name in db.list_collection_names():
+            coll = db[name]
+            info['collections'].append({
+                'name': name,
+                'document_count': coll.count_documents({}),
+                'indexes': list(coll.index_information().keys())
+            })
+        
+        return jsonify(info), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ============================================
 # RUN THE APP
 # ============================================
 
 if __name__ == '__main__':
-    print("🚀 Starting Flask Backend with MongoDB...")
-    print("📊 Stock Prediction API is running!")
-    print("🔗 Access at: http://localhost:5000")
+    print("\n" + "="*50)
+    print("🚀 STOCK PREDICTION API")
+    print("="*50)
+    print(f"📊 Database: {db.name}")
+    print(f"🔗 API URL: http://localhost:5000")
+    print(f"❤️  Health: http://localhost:5000/health")
+    print("="*50 + "\n")
+    
     app.run(debug=True, host='0.0.0.0', port=5000)
