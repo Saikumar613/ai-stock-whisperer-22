@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { chatApi, ChatMessage } from "@/services/api";
 import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,7 +15,7 @@ interface Message {
 }
 
 export default function Chat() {
-  const [user, setUser] = useState<any>(null);
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -23,33 +24,28 @@ export default function Chat() {
   const { toast } = useToast();
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        navigate("/auth");
-      } else {
-        setUser(session.user);
-        loadChatHistory(session.user.id);
-      }
-    });
-  }, [navigate]);
+    if (!authLoading && !isAuthenticated) {
+      navigate("/auth");
+    }
+  }, [isAuthenticated, authLoading, navigate]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadChatHistory();
+    }
+  }, [isAuthenticated]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const loadChatHistory = async (userId: string) => {
+  const loadChatHistory = async () => {
     try {
-      const { data, error } = await supabase
-        .from("chat_messages")
-        .select("*")
-        .eq("user_id", userId)
-        .order("created_at", { ascending: true })
-        .limit(50);
-
-      if (error) throw error;
-      if (data) {
-        setMessages(data.map((msg) => ({ role: msg.role as "user" | "assistant", content: msg.content })));
-      }
+      const history = await chatApi.getHistory();
+      setMessages(history.map((msg) => ({ 
+        role: msg.role as "user" | "assistant", 
+        content: msg.content 
+      })));
     } catch (error) {
       console.error("Error loading chat history:", error);
     }
@@ -65,33 +61,14 @@ export default function Chat() {
     setLoading(true);
 
     try {
-      // Save user message
-      await supabase.from("chat_messages").insert({
-        user_id: user.id,
-        role: "user",
-        content: input,
-      });
-
-      // Call AI function
-      const { data, error } = await supabase.functions.invoke("stock-ai-chat", {
-        body: { message: input, userId: user.id },
-      });
-
-      if (error) throw error;
+      const { response } = await chatApi.sendMessage(input);
 
       const assistantMessage: Message = {
         role: "assistant",
-        content: data.response || "I'm here to help with your stock investment questions!",
+        content: response || "I'm here to help with your stock investment questions!",
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
-
-      // Save assistant message
-      await supabase.from("chat_messages").insert({
-        user_id: user.id,
-        role: "assistant",
-        content: assistantMessage.content,
-      });
     } catch (error: any) {
       toast({
         title: "Error",
@@ -103,9 +80,19 @@ export default function Chat() {
     }
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) return null;
+
   return (
     <div className="min-h-screen bg-background">
-      <Navbar user={user} />
+      <Navbar />
 
       <div className="container mx-auto px-4 pt-24 pb-6 max-w-4xl">
         <div className="mb-6">

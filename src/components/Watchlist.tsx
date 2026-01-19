@@ -1,39 +1,26 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { watchlistApi, WatchlistItem } from "@/services/api";
 import { Button } from "@/components/ui/button";
 import { Trash2, TrendingUp, TrendingDown } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface WatchlistProps {
-  userId: string;
   onSelectStock: (symbol: string) => void;
 }
 
-interface WatchlistItem {
-  id: string;
-  symbol: string;
-  company_name: string;
-}
-
-export const Watchlist = ({ userId, onSelectStock }: WatchlistProps) => {
+export const Watchlist = ({ onSelectStock }: WatchlistProps) => {
   const [items, setItems] = useState<WatchlistItem[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
     fetchWatchlist();
-  }, [userId]);
+  }, []);
 
   const fetchWatchlist = async () => {
     try {
-      const { data, error } = await supabase
-        .from("watchlist")
-        .select("*")
-        .eq("user_id", userId)
-        .order("added_at", { ascending: false });
-
-      if (error) throw error;
-      setItems(data || []);
+      const data = await watchlistApi.getWatchlist();
+      setItems(data);
     } catch (error: any) {
       toast({
         title: "Error",
@@ -47,11 +34,8 @@ export const Watchlist = ({ userId, onSelectStock }: WatchlistProps) => {
 
   const handleRemove = async (id: string) => {
     try {
-      const { error } = await supabase.from("watchlist").delete().eq("id", id);
-
-      if (error) throw error;
-
-      setItems(items.filter((item) => item.id !== id));
+      await watchlistApi.removeFromWatchlist(id);
+      setItems(items.filter((item) => item._id !== id));
       toast({
         title: "Removed",
         description: "Stock removed from watchlist",
@@ -65,7 +49,6 @@ export const Watchlist = ({ userId, onSelectStock }: WatchlistProps) => {
     }
   };
 
-  // Generate random price changes for demo
   const getPriceChange = () => {
     const change = (Math.random() - 0.5) * 10;
     return {
@@ -93,7 +76,7 @@ export const Watchlist = ({ userId, onSelectStock }: WatchlistProps) => {
         const priceChange = getPriceChange();
         return (
           <div
-            key={item.id}
+            key={item._id}
             className="bg-background/50 p-4 rounded-lg border border-border hover:border-primary/50 transition-all cursor-pointer"
             onClick={() => onSelectStock(item.symbol)}
           >
@@ -107,7 +90,7 @@ export const Watchlist = ({ userId, onSelectStock }: WatchlistProps) => {
                 variant="ghost"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleRemove(item.id);
+                  handleRemove(item._id);
                 }}
                 className="h-8 w-8"
               >

@@ -1,14 +1,8 @@
-/**
- * FRONTEND COMPONENT
- * Location: frontend/src/components/TrendChart.tsx
- * Tool: VS Code + Node.js (React)
- */
-
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from "recharts";
 import { TrendingUp, Loader2 } from "lucide-react";
-import { fetchStockData, getPrediction } from "@/services/stockApi";
-import { supabase } from "@/integrations/supabase/client";
+import { stockApi, predictionApi } from "@/services/api";
+import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +24,7 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
   const [modelType, setModelType] = useState<'SVM' | 'DecisionTree' | 'RandomForest' | 'LSTM'>('RandomForest');
   const [prediction, setPrediction] = useState<number | null>(null);
   const { toast } = useToast();
+  const { isAuthenticated } = useAuth();
 
   useEffect(() => {
     if (!selectedStock) return;
@@ -38,9 +33,8 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
       setLoading(true);
       setPrediction(null);
       try {
-        const stockData = await fetchStockData(selectedStock);
+        const stockData = await stockApi.getStockData(selectedStock);
         
-        // Transform data for chart
         const chartData = stockData.data.slice(-30).map((item: any) => ({
           date: new Date(item.Date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
           price: parseFloat(item.Close.toFixed(2)),
@@ -64,20 +58,18 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
   const handlePredict = async () => {
     if (!selectedStock) return;
 
+    if (!isAuthenticated) {
+      toast({
+        title: "Authentication required",
+        description: "Please sign in to use predictions",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setPredicting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        toast({
-          title: "Authentication required",
-          description: "Please sign in to use predictions",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const predictionData = await getPrediction(selectedStock, user.id, modelType);
+      const predictionData = await predictionApi.predict(selectedStock, modelType);
       setPrediction(predictionData.predicted_price);
       
       toast({
@@ -103,11 +95,6 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
           <p className="text-sm text-primary">
             Actual: ${payload[0].value}
           </p>
-          {payload[1] && (
-            <p className="text-sm text-accent">
-              Prediction: ${payload[1].value}
-            </p>
-          )}
         </div>
       );
     }
@@ -168,10 +155,6 @@ export const TrendChart = ({ selectedStock }: TrendChartProps) => {
               <linearGradient id="colorPrice" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="hsl(var(--chart-primary))" stopOpacity={0.3} />
                 <stop offset="95%" stopColor="hsl(var(--chart-primary))" stopOpacity={0} />
-              </linearGradient>
-              <linearGradient id="colorPrediction" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="hsl(var(--chart-secondary))" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="hsl(var(--chart-secondary))" stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
