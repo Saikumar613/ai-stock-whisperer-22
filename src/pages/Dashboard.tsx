@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { Navbar } from "@/components/Navbar";
 import { StockSearch } from "@/components/StockSearch";
 import { TrendChart } from "@/components/TrendChart";
@@ -9,38 +9,20 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export default function Dashboard() {
-  const [user, setUser] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, isAuthenticated, loading } = useAuth();
   const [selectedStock, setSelectedStock] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) {
-        navigate("/auth");
-      } else {
-        setUser(session.user);
-        setLoading(false);
-      }
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!session) {
-        navigate("/auth");
-      } else {
-        setUser(session.user);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [navigate]);
+    if (!loading && !isAuthenticated) {
+      navigate("/auth");
+    }
+  }, [isAuthenticated, loading, navigate]);
 
   if (loading) {
     return (
       <div className="min-h-screen bg-background">
-        <Navbar user={user} />
+        <Navbar />
         <div className="container mx-auto px-4 pt-24">
           <Skeleton className="h-12 w-64 mb-8" />
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -52,9 +34,11 @@ export default function Dashboard() {
     );
   }
 
+  if (!isAuthenticated) return null;
+
   return (
     <div className="min-h-screen bg-background">
-      <Navbar user={user} />
+      <Navbar />
       
       <div className="container mx-auto px-4 pt-24 pb-12">
         <div className="mb-8">
@@ -76,7 +60,7 @@ export default function Dashboard() {
 
           <Card className="p-6 bg-card/50 backdrop-blur-sm border-border">
             <h2 className="text-2xl font-semibold mb-4">Your Watchlist</h2>
-            <Watchlist userId={user?.id} onSelectStock={setSelectedStock} />
+            <Watchlist onSelectStock={setSelectedStock} />
           </Card>
         </div>
       </div>

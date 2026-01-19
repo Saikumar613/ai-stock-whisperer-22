@@ -1,7 +1,7 @@
 # ============================================
-# STOCK PREDICTION BACKEND WITH MONGODB
+# COMPLETE STOCK PREDICTION BACKEND
+# Flask + MongoDB + JWT Auth + OpenAI
 # ============================================
-# Tool: Python 3.8+
 # Run: python app.py
 # Port: 5000
 # ============================================
@@ -21,25 +21,32 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from bson import ObjectId
 import json
+import hashlib
+import secrets
+import jwt
+import requests
 
 # Load environment variables
 load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+CORS(app, origins=["*"], supports_credentials=True)
+
+# Configuration
+JWT_SECRET = os.getenv('JWT_SECRET', 'your-super-secret-jwt-key-change-in-production')
+JWT_EXPIRY_HOURS = 24
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/stockDB')
 
 # ============================================
 # MONGODB CONNECTION & AUTO-SETUP
 # ============================================
 
-MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/stockDB')
-
 def setup_database():
     """
     Connect to MongoDB and automatically create collections with indexes.
-    Collections are created automatically when first document is inserted,
-    but we also create indexes for better performance.
+    Collections are created automatically when first document is inserted.
     """
     try:
         client = MongoClient(MONGODB_URI)
@@ -47,7 +54,7 @@ def setup_database():
         
         print(f"✅ Connected to MongoDB: {db.name}")
         
-        # Define collections - MongoDB creates them automatically on first insert
+        # Define collections
         collections = {
             'users': db.users,
             'profiles': db.profiles,
@@ -58,27 +65,14 @@ def setup_database():
         }
         
         # Create indexes for better query performance
-        # These are idempotent - safe to run multiple times
-        
-        # Users collection indexes
         collections['users'].create_index('email', unique=True, sparse=True)
-        
-        # Profiles collection indexes
         collections['profiles'].create_index('user_id', unique=True)
-        
-        # Watchlist collection indexes
         collections['watchlist'].create_index([('user_id', ASCENDING), ('symbol', ASCENDING)], unique=True)
         collections['watchlist'].create_index('user_id')
-        
-        # Stock data collection indexes
         collections['stock_data'].create_index([('symbol', ASCENDING), ('date', DESCENDING)])
         collections['stock_data'].create_index('symbol')
-        
-        # Stock predictions collection indexes
         collections['stock_predictions'].create_index([('user_id', ASCENDING), ('created_at', DESCENDING)])
         collections['stock_predictions'].create_index('symbol')
-        
-        # Chat messages collection indexes
         collections['chat_messages'].create_index([('user_id', ASCENDING), ('created_at', ASCENDING)])
         
         print("✅ Database indexes created successfully!")
@@ -93,6 +87,229 @@ def setup_database():
 
 # Initialize database connection
 client, db, collections = setup_database()
+
+# ============================================
+# AUTHENTICATION HELPERS
+# ============================================
+
+def hash_password(password):
+    """Hash password using SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def generate_token(user_id, email):
+    """Generate JWT token"""
+    payload = {
+        'user_id': str(user_id),
+        'email': email,
+        'exp': datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS),
+        'iat': datetime.utcnow()
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
+
+def verify_token(token):
+    """Verify JWT token and return payload"""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+def get_current_user():
+    """Extract user from Authorization header"""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return None
+    
+    token = auth_header[7:]  # Remove 'Bearer ' prefix
+    payload = verify_token(token)
+    if not payload:
+        return None
+    
+    return payload
+
+def require_auth(f):
+    """Decorator to require authentication"""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({'error': 'Authentication required'}), 401
+        request.current_user = user
+        return f(*args, **kwargs)
+    return decorated
+
+def serialize_doc(doc):
+    """Convert MongoDB document to JSON-serializable dict"""
+    if doc is None:
+        return None
+    doc['_id'] = str(doc['_id'])
+    if 'user_id' in doc and isinstance(doc['user_id'], ObjectId):
+        doc['user_id'] = str(doc['user_id'])
+    return doc
+
+# ============================================
+# AUTH API ENDPOINTS
+# ============================================
+
+@app.route('/api/auth/signup', methods=['POST'])
+def signup():
+    """Register a new user"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').lower().strip()
+        password = data.get('password', '')
+        full_name = data.get('full_name', '')
+        
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+        
+        if len(password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+        
+        # Check if user exists
+        if collections['users'].find_one({'email': email}):
+            return jsonify({'error': 'Email already registered'}), 400
+        
+        # Create user
+        hashed_password = hash_password(password)
+        user_result = collections['users'].insert_one({
+            'email': email,
+            'password': hashed_password,
+            'created_at': datetime.now(),
+            'updated_at': datetime.now()
+        })
+        
+        user_id = str(user_result.inserted_id)
+        
+        # Create profile
+        collections['profiles'].insert_one({
+            'user_id': user_id,
+            'email': email,
+            'full_name': full_name,
+            'created_at': datetime.now(),
+            'updated_at': datetime.now()
+        })
+        
+        # Generate token
+        token = generate_token(user_id, email)
+        
+        print(f"✅ New user registered: {email}")
+        
+        return jsonify({
+            'message': 'Account created successfully',
+            'token': token,
+            'user': {
+                'id': user_id,
+                'email': email,
+                'full_name': full_name
+            }
+        }), 201
+        
+    except Exception as e:
+        print(f"❌ Signup error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    """Login user and return JWT token"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').lower().strip()
+        password = data.get('password', '')
+        
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+        
+        # Find user
+        user = collections['users'].find_one({'email': email})
+        if not user:
+            return jsonify({'error': 'Invalid email or password'}), 401
+        
+        # Verify password
+        if user['password'] != hash_password(password):
+            return jsonify({'error': 'Invalid email or password'}), 401
+        
+        user_id = str(user['_id'])
+        
+        # Get profile
+        profile = collections['profiles'].find_one({'user_id': user_id})
+        full_name = profile.get('full_name', '') if profile else ''
+        
+        # Generate token
+        token = generate_token(user_id, email)
+        
+        print(f"✅ User logged in: {email}")
+        
+        return jsonify({
+            'message': 'Login successful',
+            'token': token,
+            'user': {
+                'id': user_id,
+                'email': email,
+                'full_name': full_name,
+                'created_at': user.get('created_at', datetime.now()).isoformat()
+            }
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Login error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/me', methods=['GET'])
+@require_auth
+def get_me():
+    """Get current user info"""
+    try:
+        user = request.current_user
+        user_id = user['user_id']
+        
+        # Get user from DB
+        db_user = collections['users'].find_one({'_id': ObjectId(user_id)})
+        if not db_user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get profile
+        profile = collections['profiles'].find_one({'user_id': user_id})
+        
+        return jsonify({
+            'user': {
+                'id': user_id,
+                'email': db_user['email'],
+                'full_name': profile.get('full_name', '') if profile else '',
+                'created_at': db_user.get('created_at', datetime.now()).isoformat()
+            }
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/auth/update-password', methods=['POST'])
+@require_auth
+def update_password():
+    """Update user password"""
+    try:
+        user = request.current_user
+        data = request.get_json()
+        new_password = data.get('password', '')
+        
+        if len(new_password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+        
+        collections['users'].update_one(
+            {'_id': ObjectId(user['user_id'])},
+            {'$set': {
+                'password': hash_password(new_password),
+                'updated_at': datetime.now()
+            }}
+        )
+        
+        return jsonify({'message': 'Password updated successfully'}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ============================================
 # STOCK SYMBOLS DATABASE
@@ -195,10 +412,10 @@ def search_symbols(query):
         for stock in stocks:
             if query in stock['symbol'].upper() or query in stock['name'].upper():
                 results.append({**stock, "sector": sector})
-    return results[:20]  # Limit results
+    return results[:20]
 
 # ============================================
-# HELPER FUNCTIONS
+# STOCK DATA HELPERS
 # ============================================
 
 def fetch_stock_data_safe(symbol, period="1y"):
@@ -213,19 +430,17 @@ def fetch_stock_data_safe(symbol, period="1y"):
         if hist.empty:
             return None, "No data found for symbol"
         
-        # Get additional info
         info = stock.info
         
-        # Format data
         data = []
         for index, row in hist.iterrows():
             data.append({
-                'date': index.strftime('%Y-%m-%d'),
-                'open': float(row['Open']),
-                'high': float(row['High']),
-                'low': float(row['Low']),
-                'close': float(row['Close']),
-                'volume': int(row['Volume'])
+                'Date': index.strftime('%Y-%m-%d'),
+                'Open': float(row['Open']),
+                'High': float(row['High']),
+                'Low': float(row['Low']),
+                'Close': float(row['Close']),
+                'Volume': int(row['Volume'])
             })
         
         return {
@@ -242,15 +457,8 @@ def fetch_stock_data_safe(symbol, period="1y"):
     except Exception as e:
         return None, str(e)
 
-def serialize_doc(doc):
-    """Convert MongoDB document to JSON-serializable dict"""
-    if doc is None:
-        return None
-    doc['_id'] = str(doc['_id'])
-    return doc
-
 # ============================================
-# API ENDPOINTS - STOCK DATA
+# STOCK DATA API ENDPOINTS
 # ============================================
 
 @app.route('/api/symbols', methods=['GET'])
@@ -280,20 +488,16 @@ def get_sectors():
 
 @app.route('/api/get_stock_data/<symbol>', methods=['GET'])
 def get_stock_data(symbol):
-    """
-    Fetch stock data from Yahoo Finance and save to MongoDB.
-    This automatically creates the stock_data collection!
-    """
+    """Fetch stock data from Yahoo Finance and save to MongoDB"""
     try:
         period = request.args.get('period', '1y')
         
-        # Fetch from Yahoo Finance using yfinance library
         stock_data, error = fetch_stock_data_safe(symbol, period)
         
         if error:
             return jsonify({'error': error}), 404
         
-        # Save to MongoDB (this auto-creates collection if it doesn't exist!)
+        # Save to MongoDB
         collections['stock_data'].update_one(
             {'symbol': symbol, 'date': datetime.now().strftime('%Y-%m-%d')},
             {
@@ -304,7 +508,7 @@ def get_stock_data(symbol):
                     'fetched_at': datetime.now()
                 }
             },
-            upsert=True  # Insert if doesn't exist, update if exists
+            upsert=True
         )
         
         print(f"📊 Saved stock data for {symbol} to MongoDB")
@@ -319,7 +523,6 @@ def search_stocks(query):
     """Search for stocks by name or symbol"""
     results = search_symbols(query)
     
-    # Enrich with live data for top 5 results
     enriched = []
     for stock in results[:5]:
         try:
@@ -338,25 +541,23 @@ def search_stocks(query):
     return jsonify(enriched + results[5:]), 200
 
 # ============================================
-# API ENDPOINTS - PREDICTIONS
+# PREDICTION API ENDPOINTS
 # ============================================
 
 @app.route('/api/predict', methods=['POST'])
+@require_auth
 def predict():
-    """
-    Predict stock price using ML models.
-    Saves prediction to MongoDB automatically!
-    """
+    """Predict stock price using ML models"""
     try:
+        user = request.current_user
         data = request.get_json()
         symbol = data.get('symbol')
-        user_id = data.get('user_id', 'anonymous')
         model_type = data.get('model_type', 'RandomForest')
         
         if not symbol:
             return jsonify({'error': 'Symbol is required'}), 400
         
-        # Fetch historical data from Yahoo Finance
+        # Fetch historical data
         stock = yf.Ticker(symbol)
         hist = stock.history(period="1y")
         
@@ -371,32 +572,27 @@ def predict():
         X = np.array(df[['Close']])
         y = np.array(df['Prediction'])
         
-        # Split data (80% train, 20% test)
         split = int(0.8 * len(X))
         X_train, X_test = X[:split], X[split:]
         y_train, y_test = y[:split], y[split:]
         
-        # Scale data
         scaler = MinMaxScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
         
-        # Select and train model
         if model_type == 'SVM':
             model = SVR(kernel='rbf', C=1e3, gamma=0.1)
         elif model_type == 'DecisionTree':
             model = DecisionTreeRegressor(random_state=42)
-        else:  # RandomForest (default)
+        else:
             model = RandomForestRegressor(n_estimators=100, random_state=42)
         
         model.fit(X_train_scaled, y_train)
         
-        # Predict next day price
         last_price = np.array([[hist['Close'].iloc[-1]]])
         last_price_scaled = scaler.transform(last_price)
         prediction = model.predict(last_price_scaled)[0]
         
-        # Calculate confidence
         train_score = model.score(X_train_scaled, y_train)
         test_score = model.score(X_test_scaled, y_test)
         confidence = max(0, min(1, (train_score + test_score) / 2))
@@ -405,7 +601,6 @@ def predict():
         predicted_price = float(prediction)
         price_change = ((predicted_price - current_price) / current_price) * 100
         
-        # Determine recommendation
         if price_change > 2:
             recommendation = 'BUY'
         elif price_change < -2:
@@ -424,9 +619,9 @@ def predict():
             'prediction_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
         
-        # Save prediction to MongoDB (auto-creates collection!)
+        # Save prediction to MongoDB
         collections['stock_predictions'].insert_one({
-            'user_id': user_id,
+            'user_id': user['user_id'],
             'symbol': symbol,
             'predicted_price': predicted_price,
             'current_price': current_price,
@@ -443,13 +638,15 @@ def predict():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/predictions/<user_id>', methods=['GET'])
-def get_user_predictions(user_id):
-    """Get prediction history for a user"""
+@app.route('/api/predictions', methods=['GET'])
+@require_auth
+def get_user_predictions():
+    """Get prediction history for current user"""
     try:
+        user = request.current_user
         predictions = list(
             collections['stock_predictions']
-            .find({'user_id': user_id})
+            .find({'user_id': user['user_id']})
             .sort('created_at', DESCENDING)
             .limit(50)
         )
@@ -460,64 +657,82 @@ def get_user_predictions(user_id):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# API ENDPOINTS - WATCHLIST
+# WATCHLIST API ENDPOINTS
 # ============================================
 
-@app.route('/api/watchlist/<user_id>', methods=['GET'])
-def get_watchlist(user_id):
+@app.route('/api/watchlist', methods=['GET'])
+@require_auth
+def get_watchlist():
     """Get user's watchlist"""
     try:
-        watchlist = list(collections['watchlist'].find({'user_id': user_id}))
-        return jsonify([serialize_doc(w) for w in watchlist]), 200
+        user = request.current_user
+        watchlist = list(collections['watchlist'].find({'user_id': user['user_id']}))
+        
+        # Enrich with current prices
+        enriched = []
+        for item in watchlist:
+            try:
+                stock_data, _ = fetch_stock_data_safe(item['symbol'], '5d')
+                enriched.append({
+                    **serialize_doc(item),
+                    'current_price': stock_data['current_price'] if stock_data else None
+                })
+            except:
+                enriched.append(serialize_doc(item))
+        
+        return jsonify(enriched), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/watchlist', methods=['POST'])
+@require_auth
 def add_to_watchlist():
     """Add stock to watchlist"""
     try:
+        user = request.current_user
         data = request.get_json()
-        user_id = data.get('user_id')
-        symbol = data.get('symbol')
+        symbol = data.get('symbol', '').upper()
         company_name = data.get('company_name', symbol)
         
-        if not user_id or not symbol:
-            return jsonify({'error': 'user_id and symbol required'}), 400
+        if not symbol:
+            return jsonify({'error': 'Symbol is required'}), 400
         
         # Check if already exists
         existing = collections['watchlist'].find_one({
-            'user_id': user_id,
+            'user_id': user['user_id'],
             'symbol': symbol
         })
         
         if existing:
-            return jsonify({'error': 'Already in watchlist'}), 400
+            return jsonify({'error': 'Already in watchlist', 'code': 'DUPLICATE'}), 400
         
-        # Add to watchlist (auto-creates collection!)
         result = collections['watchlist'].insert_one({
-            'user_id': user_id,
+            'user_id': user['user_id'],
             'symbol': symbol,
             'company_name': company_name,
             'added_at': datetime.now()
         })
         
-        print(f"📌 Added {symbol} to watchlist for user {user_id}")
+        print(f"📌 Added {symbol} to watchlist for user {user['user_id']}")
         
         return jsonify({
             'message': 'Added to watchlist',
-            'id': str(result.inserted_id)
+            'id': str(result.inserted_id),
+            'symbol': symbol
         }), 201
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/watchlist/<user_id>/<symbol>', methods=['DELETE'])
-def remove_from_watchlist(user_id, symbol):
+@app.route('/api/watchlist/<item_id>', methods=['DELETE'])
+@require_auth
+def remove_from_watchlist(item_id):
     """Remove stock from watchlist"""
     try:
+        user = request.current_user
         result = collections['watchlist'].delete_one({
-            'user_id': user_id,
-            'symbol': symbol
+            '_id': ObjectId(item_id),
+            'user_id': user['user_id']
         })
         
         if result.deleted_count == 0:
@@ -529,16 +744,18 @@ def remove_from_watchlist(user_id, symbol):
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# API ENDPOINTS - CHAT MESSAGES
+# CHAT API ENDPOINTS (with OpenAI)
 # ============================================
 
-@app.route('/api/chat/<user_id>', methods=['GET'])
-def get_chat_history(user_id):
-    """Get chat history for a user"""
+@app.route('/api/chat/history', methods=['GET'])
+@require_auth
+def get_chat_history():
+    """Get chat history for current user"""
     try:
+        user = request.current_user
         messages = list(
             collections['chat_messages']
-            .find({'user_id': user_id})
+            .find({'user_id': user['user_id']})
             .sort('created_at', ASCENDING)
             .limit(100)
         )
@@ -549,31 +766,127 @@ def get_chat_history(user_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/chat', methods=['POST'])
-def save_chat_message():
-    """Save a chat message"""
+@require_auth
+def chat():
+    """Send message and get AI response using OpenAI"""
     try:
+        user = request.current_user
         data = request.get_json()
-        user_id = data.get('user_id')
-        content = data.get('content')
-        role = data.get('role', 'user')
+        message = data.get('message', '').strip()
         
-        if not user_id or not content:
-            return jsonify({'error': 'user_id and content required'}), 400
+        if not message:
+            return jsonify({'error': 'Message is required'}), 400
         
-        result = collections['chat_messages'].insert_one({
-            'user_id': user_id,
-            'content': content,
-            'role': role,
+        # Save user message
+        collections['chat_messages'].insert_one({
+            'user_id': user['user_id'],
+            'content': message,
+            'role': 'user',
+            'created_at': datetime.now()
+        })
+        
+        # Generate AI response
+        if OPENAI_API_KEY:
+            # Use OpenAI API
+            try:
+                response = requests.post(
+                    'https://api.openai.com/v1/chat/completions',
+                    headers={
+                        'Authorization': f'Bearer {OPENAI_API_KEY}',
+                        'Content-Type': 'application/json'
+                    },
+                    json={
+                        'model': 'gpt-3.5-turbo',
+                        'messages': [
+                            {
+                                'role': 'system',
+                                'content': '''You are an AI Investment Assistant specialized in stock market analysis. 
+                                You help users understand stocks, market trends, and investment strategies.
+                                Provide clear, actionable insights while noting that this is for educational purposes only.
+                                Always remind users to do their own research and consult financial advisors for major decisions.'''
+                            },
+                            {'role': 'user', 'content': message}
+                        ],
+                        'max_tokens': 500,
+                        'temperature': 0.7
+                    },
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    ai_response = response.json()['choices'][0]['message']['content']
+                else:
+                    ai_response = f"I apologize, but I'm having trouble connecting to the AI service. Error: {response.status_code}"
+                    
+            except Exception as e:
+                ai_response = f"I'm having trouble processing your request. Please try again. Error: {str(e)}"
+        else:
+            # Fallback response when no API key
+            ai_response = generate_fallback_response(message)
+        
+        # Save AI response
+        collections['chat_messages'].insert_one({
+            'user_id': user['user_id'],
+            'content': ai_response,
+            'role': 'assistant',
             'created_at': datetime.now()
         })
         
         return jsonify({
-            'message': 'Message saved',
-            'id': str(result.inserted_id)
-        }), 201
+            'response': ai_response,
+            'message': 'Success'
+        }), 200
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+def generate_fallback_response(message):
+    """Generate a helpful response without OpenAI"""
+    message_lower = message.lower()
+    
+    if any(word in message_lower for word in ['hello', 'hi', 'hey']):
+        return "Hello! I'm your AI Investment Assistant. I can help you analyze stocks, understand market trends, and learn about investment strategies. What would you like to know?"
+    
+    if any(word in message_lower for word in ['buy', 'sell', 'invest']):
+        return """When considering whether to buy or sell a stock, consider these factors:
+
+1. **Fundamental Analysis**: Look at the company's earnings, revenue growth, and financial health
+2. **Technical Analysis**: Study price charts, moving averages, and trading volume
+3. **Market Conditions**: Consider the broader market trends and economic indicators
+4. **Risk Tolerance**: Ensure the investment aligns with your risk profile
+
+Always do thorough research and consider consulting a financial advisor for personalized advice."""
+
+    if any(word in message_lower for word in ['predict', 'forecast', 'future']):
+        return """Stock price predictions can be made using various methods:
+
+1. **Machine Learning Models**: SVM, Random Forest, and LSTM neural networks
+2. **Technical Indicators**: Moving averages, RSI, MACD
+3. **Fundamental Analysis**: Earnings forecasts, industry trends
+
+Use our Prediction feature on the Dashboard to get ML-powered price predictions for any stock!
+
+Remember: No prediction is 100% accurate. Always invest responsibly."""
+
+    if any(word in message_lower for word in ['risk', 'safe', 'protect']):
+        return """Here are key risk management strategies:
+
+1. **Diversification**: Don't put all eggs in one basket
+2. **Stop-Loss Orders**: Set automatic sell points to limit losses
+3. **Position Sizing**: Never risk more than 1-2% of your portfolio on a single trade
+4. **Regular Rebalancing**: Maintain your target asset allocation
+
+Would you like to learn more about any of these strategies?"""
+
+    return """I'm here to help with your investment questions! You can ask me about:
+
+• Stock analysis and predictions
+• Market trends and indicators
+• Investment strategies
+• Risk management
+• How to use this platform's features
+
+What would you like to know?"""
 
 # ============================================
 # HEALTH CHECK & DATABASE INFO
@@ -583,10 +896,8 @@ def save_chat_message():
 def health_check():
     """Check API and database health"""
     try:
-        # Check MongoDB connection
         client.admin.command('ping')
         
-        # Get collection stats
         collection_stats = {}
         for name in db.list_collection_names():
             collection_stats[name] = db[name].count_documents({})
@@ -595,6 +906,7 @@ def health_check():
             'status': 'healthy',
             'database': db.name,
             'collections': collection_stats,
+            'openai_configured': bool(OPENAI_API_KEY),
             'message': 'Flask API + MongoDB is running!'
         }), 200
         
@@ -638,6 +950,7 @@ if __name__ == '__main__':
     print(f"📊 Database: {db.name}")
     print(f"🔗 API URL: http://localhost:5000")
     print(f"❤️  Health: http://localhost:5000/health")
+    print(f"🤖 OpenAI: {'Configured' if OPENAI_API_KEY else 'Not configured (using fallback)'}")
     print("="*50 + "\n")
     
     app.run(debug=True, host='0.0.0.0', port=5000)

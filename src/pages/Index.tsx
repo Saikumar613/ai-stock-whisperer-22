@@ -1,34 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Navbar } from "@/components/Navbar";
 import { TrendingUp, Bot, BarChart3, Shield, Zap, Target } from "lucide-react";
 import heroBg from "@/assets/hero-bg.jpg";
 
 export default function Index() {
-  const [user, setUser] = useState<any>(null);
+  const { user, loading } = useAuth();
   const navigate = useNavigate();
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
 
   const features = [
     {
       icon: Bot,
       title: "AI-Powered Predictions",
-      description: "Advanced LSTM models analyze historical data for accurate stock forecasts",
+      description: "Advanced ML models analyze historical data for accurate stock forecasts",
     },
     {
       icon: TrendingUp,
@@ -59,7 +45,7 @@ export default function Index() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Navbar user={user} />
+      <Navbar />
       
       {/* Hero Section */}
       <section className="relative pt-24 pb-20 overflow-hidden">
@@ -91,7 +77,7 @@ export default function Index() {
               <Button
                 size="lg"
                 variant="outline"
-                onClick={() => navigate("/chat")}
+                onClick={() => navigate(user ? "/chat" : "/auth")}
                 className="border-primary/50 hover:bg-primary/10"
               >
                 Try AI Assistant

@@ -1,29 +1,22 @@
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Home, TrendingUp, MessageSquare, User, LogOut } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import logo from "@/assets/logo.png";
 
-interface NavbarProps {
-  user?: any;
-}
-
-export const Navbar = ({ user }: NavbarProps) => {
+export const Navbar = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user, logout, isAuthenticated } = useAuth();
 
-  const handleSignOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      toast({
-        title: "Error signing out",
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
-      navigate("/auth");
-    }
+  const handleSignOut = () => {
+    logout();
+    toast({
+      title: "Signed out",
+      description: "You've been successfully signed out.",
+    });
+    navigate("/auth");
   };
 
   return (
@@ -42,7 +35,7 @@ export const Navbar = ({ user }: NavbarProps) => {
               <Home className="h-4 w-4" />
               <span>Home</span>
             </Link>
-            {user && (
+            {isAuthenticated && (
               <>
                 <Link to="/dashboard" className="flex items-center gap-2 text-foreground hover:text-primary transition-colors">
                   <TrendingUp className="h-4 w-4" />
@@ -57,7 +50,7 @@ export const Navbar = ({ user }: NavbarProps) => {
           </div>
 
           <div className="flex items-center gap-3">
-            {user ? (
+            {isAuthenticated ? (
               <>
                 <Button variant="ghost" size="icon" onClick={() => navigate("/profile")}>
                   <User className="h-5 w-5" />

@@ -1,16 +1,10 @@
-/**
- * FRONTEND COMPONENT
- * Location: frontend/src/components/StockSearch.tsx
- * Tool: VS Code + Node.js (React)
- */
-
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Search, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { fetchStockData } from "@/services/stockApi";
+import { useAuth } from "@/contexts/AuthContext";
+import { stockApi, watchlistApi } from "@/services/api";
 
 interface StockSearchProps {
   onSelectStock: (symbol: string) => void;
@@ -20,6 +14,7 @@ export const StockSearch = ({ onSelectStock }: StockSearchProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  const { isAuthenticated } = useAuth();
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,8 +22,7 @@ export const StockSearch = ({ onSelectStock }: StockSearchProps) => {
 
     setLoading(true);
     try {
-      // Fetch real stock data from Flask backend
-      const stockData = await fetchStockData(searchQuery.toUpperCase());
+      const stockData = await stockApi.getStockData(searchQuery.toUpperCase());
       onSelectStock(searchQuery.toUpperCase());
       toast({
         title: "Stock Data Loaded",
@@ -55,48 +49,35 @@ export const StockSearch = ({ onSelectStock }: StockSearchProps) => {
       return;
     }
 
-    try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        toast({
-          title: "Error",
-          description: "Please sign in to add to watchlist",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const { error } = await supabase.from("watchlist").insert({
-        user_id: user.id,
-        symbol: searchQuery.toUpperCase(),
-        company_name: searchQuery.toUpperCase(),
-      });
-
-      if (error) {
-        if (error.code === "23505") {
-          toast({
-            title: "Already in watchlist",
-            description: "This stock is already in your watchlist",
-          });
-        } else {
-          throw error;
-        }
-      } else {
-        toast({
-          title: "Added to watchlist",
-          description: `${searchQuery.toUpperCase()} has been added to your watchlist`,
-        });
-        setSearchQuery("");
-      }
-    } catch (error: any) {
+    if (!isAuthenticated) {
       toast({
         title: "Error",
-        description: error.message,
+        description: "Please sign in to add to watchlist",
         variant: "destructive",
       });
+      return;
+    }
+
+    try {
+      await watchlistApi.addToWatchlist(searchQuery.toUpperCase(), searchQuery.toUpperCase());
+      toast({
+        title: "Added to watchlist",
+        description: `${searchQuery.toUpperCase()} has been added to your watchlist`,
+      });
+      setSearchQuery("");
+    } catch (error: any) {
+      if (error.message?.includes('DUPLICATE') || error.message?.includes('Already')) {
+        toast({
+          title: "Already in watchlist",
+          description: "This stock is already in your watchlist",
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: error.message,
+          variant: "destructive",
+        });
+      }
     }
   };
 

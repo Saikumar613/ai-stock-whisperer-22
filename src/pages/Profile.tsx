@@ -1,46 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import { User, Mail, Calendar, ArrowLeft } from "lucide-react";
-import type { User as SupabaseUser } from "@supabase/supabase-js";
+import { User, Mail, Calendar, ArrowLeft, Loader2 } from "lucide-react";
 
 const Profile = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [user, setUser] = useState<SupabaseUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { user, isAuthenticated, loading, updatePassword } = useAuth();
 
   useEffect(() => {
-    const getUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        navigate("/auth");
-        return;
-      }
-      
-      setUser(session.user);
-      setLoading(false);
-    };
-
-    getUser();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!session) {
-        navigate("/auth");
-      } else {
-        setUser(session.user);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [navigate]);
+    if (!loading && !isAuthenticated) {
+      navigate("/auth");
+    }
+  }, [isAuthenticated, loading, navigate]);
 
   const handleUpdatePassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -57,41 +35,35 @@ const Profile = () => {
       return;
     }
 
-    const { error } = await supabase.auth.updateUser({
-      password: newPassword,
-    });
-
-    if (error) {
-      toast({
-        title: "Error updating password",
-        description: error.message,
-        variant: "destructive",
-      });
-    } else {
+    try {
+      await updatePassword(newPassword);
       toast({
         title: "Password updated",
         description: "Your password has been successfully updated",
       });
       (e.target as HTMLFormElement).reset();
+    } catch (error: any) {
+      toast({
+        title: "Error updating password",
+        description: error.message,
+        variant: "destructive",
+      });
     }
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background to-secondary">
-        <Navbar user={user} />
-        <div className="container mx-auto px-4 pt-24">
-          <div className="flex items-center justify-center min-h-[60vh]">
-            <div className="animate-pulse text-lg">Loading...</div>
-          </div>
-        </div>
+      <div className="min-h-screen bg-gradient-to-br from-background to-secondary flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
       </div>
     );
   }
 
+  if (!isAuthenticated) return null;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background to-secondary">
-      <Navbar user={user} />
+      <Navbar />
       <div className="container mx-auto px-4 pt-24 pb-12">
         <Button
           variant="ghost"
@@ -145,7 +117,7 @@ const Profile = () => {
                 <Input
                   id="created"
                   type="text"
-                  value={user?.created_at ? new Date(user.created_at).toLocaleDateString() : ""}
+                  value={user?.created_at ? new Date(user.created_at).toLocaleDateString() : "N/A"}
                   disabled
                   className="bg-muted"
                 />
