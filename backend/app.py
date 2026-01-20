@@ -450,15 +450,48 @@ def fetch_stock_data_safe(symbol, period="1y"):
     """
     Safely fetch stock data from Yahoo Finance.
     yfinance is a Python library that scrapes Yahoo Finance - no API key needed!
+    
+    Automatically tries multiple symbol formats for international stocks.
     """
+    original_symbol = symbol.upper().strip()
+    
+    # List of symbol variations to try
+    symbols_to_try = [original_symbol]
+    
+    # If it doesn't already have an exchange suffix, try common ones
+    if '.' not in original_symbol:
+        # Add common exchange suffixes
+        symbols_to_try.extend([
+            f"{original_symbol}.NS",  # NSE India
+            f"{original_symbol}.BO",  # BSE India
+        ])
+    
+    working_symbol = None
+    stock = None
+    hist = None
+    
+    for sym in symbols_to_try:
+        try:
+            print(f"🔍 Trying symbol: {sym}")
+            temp_stock = yf.Ticker(sym)
+            temp_hist = temp_stock.history(period=period)
+            
+            if not temp_hist.empty and len(temp_hist) > 0:
+                print(f"✅ Found data for: {sym}")
+                working_symbol = sym
+                stock = temp_stock
+                hist = temp_hist
+                break
+        except Exception as e:
+            print(f"⚠️ Error with {sym}: {str(e)}")
+            continue
+    
+    if working_symbol is None or hist is None or hist.empty:
+        # None of the variations worked
+        return None, f"No data found for symbol '{original_symbol}'. Try: {original_symbol}.NS (NSE India), {original_symbol}.BO (BSE India), or verify the symbol is correct."
+    
     try:
-        stock = yf.Ticker(symbol)
-        hist = stock.history(period=period)
-        
-        if hist.empty:
-            return None, "No data found for symbol"
-        
-        info = stock.info
+        info = stock.info if hasattr(stock, 'info') else {}
         
         data = []
         for index, row in hist.iterrows():
@@ -472,8 +505,8 @@ def fetch_stock_data_safe(symbol, period="1y"):
             })
         
         return {
-            'symbol': symbol,
-            'name': info.get('longName', info.get('shortName', symbol)),
+            'symbol': working_symbol,
+            'name': info.get('longName', info.get('shortName', working_symbol)),
             'sector': info.get('sector', 'Unknown'),
             'current_price': float(hist['Close'].iloc[-1]),
             'previous_close': info.get('previousClose', float(hist['Close'].iloc[-2]) if len(hist) > 1 else None),
@@ -814,9 +847,12 @@ def chat():
         })
         
         # Generate AI response
+        ai_response = None
+        
         if OPENAI_API_KEY:
             # Use OpenAI API
             try:
+                print(f"🤖 Calling OpenAI API...")
                 response = requests.post(
                     'https://api.openai.com/v1/chat/completions',
                     headers={
@@ -843,13 +879,24 @@ def chat():
                 
                 if response.status_code == 200:
                     ai_response = response.json()['choices'][0]['message']['content']
+                    print(f"✅ OpenAI response received")
+                elif response.status_code == 429:
+                    print(f"⚠️ OpenAI rate limited, using fallback")
+                    ai_response = generate_fallback_response(message)
                 else:
-                    ai_response = f"I apologize, but I'm having trouble connecting to the AI service. Error: {response.status_code}"
+                    print(f"⚠️ OpenAI error {response.status_code}, using fallback")
+                    ai_response = generate_fallback_response(message)
                     
+            except requests.exceptions.Timeout:
+                print(f"⚠️ OpenAI timeout, using fallback")
+                ai_response = generate_fallback_response(message)
             except Exception as e:
-                ai_response = f"I'm having trouble processing your request. Please try again. Error: {str(e)}"
-        else:
-            # Fallback response when no API key
+                print(f"⚠️ OpenAI error: {str(e)}, using fallback")
+                ai_response = generate_fallback_response(message)
+        
+        # Fallback response when no API key or API failed
+        if not ai_response:
+            print(f"📝 Using fallback response (no OpenAI API key configured)")
             ai_response = generate_fallback_response(message)
         
         # Save AI response
