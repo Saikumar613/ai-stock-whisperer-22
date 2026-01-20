@@ -43,6 +43,33 @@ MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/stockDB')
 # MONGODB CONNECTION & AUTO-SETUP
 # ============================================
 
+def create_index_safe(collection, keys, **kwargs):
+    """
+    Safely create an index, handling conflicts with existing indexes.
+    If index exists with same name but different options, drop and recreate.
+    """
+    try:
+        collection.create_index(keys, **kwargs)
+    except Exception as e:
+        if 'IndexKeySpecsConflict' in str(e) or 'index already exists' in str(e).lower():
+            # Get the index name that would be generated
+            if isinstance(keys, str):
+                index_name = f"{keys}_1"
+            elif isinstance(keys, list):
+                index_name = "_".join([f"{k}_{v}" for k, v in keys])
+            else:
+                index_name = kwargs.get('name', str(keys))
+            
+            try:
+                collection.drop_index(index_name)
+                collection.create_index(keys, **kwargs)
+                print(f"  ↻ Recreated index: {index_name}")
+            except Exception:
+                # Index might not exist or other issue, just continue
+                pass
+        else:
+            print(f"  ⚠ Index warning: {str(e)[:100]}")
+
 def setup_database():
     """
     Connect to MongoDB and automatically create collections with indexes.
@@ -64,18 +91,19 @@ def setup_database():
             'chat_messages': db.chat_messages
         }
         
-        # Create indexes for better query performance
-        collections['users'].create_index('email', unique=True, sparse=True)
-        collections['profiles'].create_index('user_id', unique=True)
-        collections['watchlist'].create_index([('user_id', ASCENDING), ('symbol', ASCENDING)], unique=True)
-        collections['watchlist'].create_index('user_id')
-        collections['stock_data'].create_index([('symbol', ASCENDING), ('date', DESCENDING)])
-        collections['stock_data'].create_index('symbol')
-        collections['stock_predictions'].create_index([('user_id', ASCENDING), ('created_at', DESCENDING)])
-        collections['stock_predictions'].create_index('symbol')
-        collections['chat_messages'].create_index([('user_id', ASCENDING), ('created_at', ASCENDING)])
+        # Create indexes for better query performance (safely handles existing indexes)
+        print("📝 Setting up indexes...")
+        create_index_safe(collections['users'], 'email', unique=True)
+        create_index_safe(collections['profiles'], 'user_id', unique=True)
+        create_index_safe(collections['watchlist'], [('user_id', ASCENDING), ('symbol', ASCENDING)], unique=True)
+        create_index_safe(collections['watchlist'], 'user_id')
+        create_index_safe(collections['stock_data'], [('symbol', ASCENDING), ('date', DESCENDING)])
+        create_index_safe(collections['stock_data'], 'symbol')
+        create_index_safe(collections['stock_predictions'], [('user_id', ASCENDING), ('created_at', DESCENDING)])
+        create_index_safe(collections['stock_predictions'], 'symbol')
+        create_index_safe(collections['chat_messages'], [('user_id', ASCENDING), ('created_at', ASCENDING)])
         
-        print("✅ Database indexes created successfully!")
+        print("✅ Database setup complete!")
         print(f"📦 Available collections: {db.list_collection_names()}")
         
         return client, db, collections
