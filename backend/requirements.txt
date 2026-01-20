@@ -16,6 +16,11 @@ numpy==1.26.3
 pandas==2.2.0
 scikit-learn==1.4.0
 
+# Deep Learning (LSTM) - Optional but recommended for best predictions
+# TensorFlow can be large, install separately if needed:
+# pip install tensorflow==2.15.0
+tensorflow==2.15.0
+
 # JWT Authentication
 PyJWT==2.8.0
 

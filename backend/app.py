@@ -15,6 +15,16 @@ from sklearn.svm import SVR
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
+
+# LSTM imports - will use simple implementation without TensorFlow for portability
+try:
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, Dense, Dropout
+    LSTM_AVAILABLE = True
+    print("✅ TensorFlow LSTM available")
+except ImportError:
+    LSTM_AVAILABLE = False
+    print("⚠️ TensorFlow not installed - LSTM will use fallback model")
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
@@ -605,10 +615,39 @@ def search_stocks(query):
 # PREDICTION API ENDPOINTS
 # ============================================
 
+def build_lstm_model(X_train, y_train, look_back=60):
+    """Build and train LSTM model"""
+    if not LSTM_AVAILABLE:
+        # Fallback to RandomForest if TensorFlow not available
+        print("⚠️ LSTM fallback: Using RandomForest instead")
+        return None, None
+    
+    try:
+        # Reshape for LSTM [samples, time steps, features]
+        X_train_lstm = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+        
+        model = Sequential([
+            LSTM(50, return_sequences=True, input_shape=(X_train_lstm.shape[1], 1)),
+            Dropout(0.2),
+            LSTM(50, return_sequences=False),
+            Dropout(0.2),
+            Dense(25),
+            Dense(1)
+        ])
+        
+        model.compile(optimizer='adam', loss='mean_squared_error')
+        model.fit(X_train_lstm, y_train, epochs=10, batch_size=32, verbose=0)
+        
+        return model, X_train_lstm.shape
+    except Exception as e:
+        print(f"⚠️ LSTM build error: {str(e)}")
+        return None, None
+
+
 @app.route('/api/predict', methods=['POST'])
 @require_auth
 def predict():
-    """Predict stock price using ML models"""
+    """Predict stock price using ML models (SVM, DecisionTree, RandomForest, LSTM)"""
     try:
         user = request.current_user
         data = request.get_json()
@@ -618,48 +657,106 @@ def predict():
         if not symbol:
             return jsonify({'error': 'Symbol is required'}), 400
         
-        # Fetch historical data
-        stock = yf.Ticker(symbol)
-        hist = stock.history(period="1y")
+        print(f"🔮 Predicting {symbol} with {model_type}...")
         
-        if hist.empty:
-            return jsonify({'error': 'Stock symbol not found'}), 404
+        # Fetch historical data using safe method (handles international symbols)
+        stock_data, error = fetch_stock_data_safe(symbol, "1y")
+        
+        if error or not stock_data:
+            return jsonify({'error': error or 'Stock symbol not found'}), 404
+        
+        # Convert to DataFrame
+        hist_data = stock_data['data']
+        if len(hist_data) < 30:
+            return jsonify({'error': 'Not enough historical data for prediction'}), 400
+        
+        df = pd.DataFrame(hist_data)
+        df['Close'] = df['Close'].astype(float)
         
         # Prepare data for ML
-        df = hist[['Close']].copy()
-        df['Prediction'] = df['Close'].shift(-1)
-        df = df.dropna()
+        prices = df['Close'].values.reshape(-1, 1)
         
-        X = np.array(df[['Close']])
-        y = np.array(df['Prediction'])
+        # Scale data
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_prices = scaler.fit_transform(prices)
+        
+        # Create sequences for prediction
+        look_back = min(60, len(prices) - 10)  # Use 60 days or less if not enough data
+        X, y = [], []
+        for i in range(look_back, len(scaled_prices)):
+            X.append(scaled_prices[i-look_back:i, 0])
+            y.append(scaled_prices[i, 0])
+        
+        X, y = np.array(X), np.array(y)
+        
+        if len(X) < 10:
+            return jsonify({'error': 'Not enough data points for prediction'}), 400
         
         split = int(0.8 * len(X))
         X_train, X_test = X[:split], X[split:]
         y_train, y_test = y[:split], y[split:]
         
-        scaler = MinMaxScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
+        # Select and train model
+        if model_type == 'LSTM':
+            if LSTM_AVAILABLE:
+                try:
+                    # Reshape for LSTM [samples, time steps, features]
+                    X_train_lstm = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+                    X_test_lstm = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+                    
+                    model = Sequential([
+                        LSTM(50, return_sequences=True, input_shape=(look_back, 1)),
+                        Dropout(0.2),
+                        LSTM(50, return_sequences=False),
+                        Dropout(0.2),
+                        Dense(25),
+                        Dense(1)
+                    ])
+                    
+                    model.compile(optimizer='adam', loss='mean_squared_error')
+                    model.fit(X_train_lstm, y_train, epochs=15, batch_size=32, verbose=0)
+                    
+                    # Predict
+                    last_sequence = scaled_prices[-look_back:].reshape(1, look_back, 1)
+                    prediction_scaled = model.predict(last_sequence, verbose=0)[0, 0]
+                    
+                    # Calculate confidence using MSE on test set
+                    test_predictions = model.predict(X_test_lstm, verbose=0)
+                    mse = np.mean((test_predictions.flatten() - y_test) ** 2)
+                    confidence = max(0, min(1, 1 - mse))  # Lower MSE = higher confidence
+                    
+                except Exception as e:
+                    print(f"⚠️ LSTM error, falling back to RandomForest: {str(e)}")
+                    model_type = 'RandomForest'
+            else:
+                print("⚠️ TensorFlow not available, using RandomForest instead")
+                model_type = 'RandomForest'
         
-        if model_type == 'SVM':
-            model = SVR(kernel='rbf', C=1e3, gamma=0.1)
-        elif model_type == 'DecisionTree':
-            model = DecisionTreeRegressor(random_state=42)
-        else:
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
+        # Non-LSTM models
+        if model_type != 'LSTM':
+            if model_type == 'SVM':
+                model = SVR(kernel='rbf', C=1e3, gamma=0.1)
+            elif model_type == 'DecisionTree':
+                model = DecisionTreeRegressor(random_state=42)
+            else:  # RandomForest
+                model = RandomForestRegressor(n_estimators=100, random_state=42)
+            
+            model.fit(X_train, y_train)
+            
+            # Predict next price
+            last_sequence = scaled_prices[-look_back:].flatten().reshape(1, -1)
+            prediction_scaled = model.predict(last_sequence)[0]
+            
+            # Calculate confidence
+            train_score = model.score(X_train, y_train)
+            test_score = model.score(X_test, y_test) if len(X_test) > 0 else train_score
+            confidence = max(0, min(1, (train_score + test_score) / 2))
         
-        model.fit(X_train_scaled, y_train)
+        # Inverse transform prediction
+        prediction_scaled_2d = np.array([[prediction_scaled]])
+        predicted_price = float(scaler.inverse_transform(prediction_scaled_2d)[0, 0])
         
-        last_price = np.array([[hist['Close'].iloc[-1]]])
-        last_price_scaled = scaler.transform(last_price)
-        prediction = model.predict(last_price_scaled)[0]
-        
-        train_score = model.score(X_train_scaled, y_train)
-        test_score = model.score(X_test_scaled, y_test)
-        confidence = max(0, min(1, (train_score + test_score) / 2))
-        
-        current_price = float(hist['Close'].iloc[-1])
-        predicted_price = float(prediction)
+        current_price = float(df['Close'].iloc[-1])
         price_change = ((predicted_price - current_price) / current_price) * 100
         
         if price_change > 2:
@@ -670,7 +767,7 @@ def predict():
             recommendation = 'HOLD'
         
         result = {
-            'symbol': symbol,
+            'symbol': stock_data['symbol'],  # Use the working symbol (may have exchange suffix)
             'predicted_price': round(predicted_price, 2),
             'current_price': round(current_price, 2),
             'price_change_percent': round(price_change, 2),
@@ -683,7 +780,7 @@ def predict():
         # Save prediction to MongoDB
         collections['stock_predictions'].insert_one({
             'user_id': user['user_id'],
-            'symbol': symbol,
+            'symbol': stock_data['symbol'],
             'predicted_price': predicted_price,
             'current_price': current_price,
             'confidence': confidence,
@@ -692,11 +789,12 @@ def predict():
             'created_at': datetime.now()
         })
         
-        print(f"🔮 Saved prediction for {symbol} to MongoDB")
+        print(f"✅ Prediction saved: {stock_data['symbol']} -> ${predicted_price:.2f} ({recommendation})")
         
         return jsonify(result), 200
         
     except Exception as e:
+        print(f"❌ Prediction error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/predictions', methods=['GET'])
