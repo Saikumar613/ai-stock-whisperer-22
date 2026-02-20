@@ -4,6 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Navbar } from "@/components/Navbar";
 import { StockSearch } from "@/components/StockSearch";
 import { TrendChart } from "@/components/TrendChart";
+import { ModelAccuracyChart } from "@/components/ModelAccuracyChart";
 import { Watchlist } from "@/components/Watchlist";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -61,6 +62,13 @@ export default function Dashboard() {
           <Card className="p-6 bg-card/50 backdrop-blur-sm border-border">
             <h2 className="text-2xl font-semibold mb-4">Your Watchlist</h2>
             <Watchlist onSelectStock={setSelectedStock} />
+          </Card>
+        </div>
+
+        <div className="mt-6">
+          <Card className="p-6 bg-card/50 backdrop-blur-sm border-border">
+            <h2 className="text-2xl font-semibold mb-4">ML Model Accuracy Comparison</h2>
+            <ModelAccuracyChart selectedStock={selectedStock} />
           </Card>
         </div>
       </div>
