@@ -797,6 +797,144 @@ def predict():
         print(f"❌ Prediction error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/compare_models', methods=['POST'])
+@require_auth
+def compare_models():
+    """Compare all ML models' accuracy for a given stock symbol"""
+    try:
+        user = request.current_user
+        data = request.get_json()
+        symbol = data.get('symbol')
+        
+        if not symbol:
+            return jsonify({'error': 'Symbol is required'}), 400
+        
+        print(f"📊 Comparing all models for {symbol}...")
+        
+        # Fetch historical data
+        stock_data, error = fetch_stock_data_safe(symbol, "1y")
+        if error or not stock_data:
+            return jsonify({'error': error or 'Stock symbol not found'}), 404
+        
+        hist_data = stock_data['data']
+        if len(hist_data) < 30:
+            return jsonify({'error': 'Not enough historical data'}), 400
+        
+        df = pd.DataFrame(hist_data)
+        df['Close'] = df['Close'].astype(float)
+        prices = df['Close'].values.reshape(-1, 1)
+        
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_prices = scaler.fit_transform(prices)
+        
+        look_back = min(60, len(prices) - 10)
+        X, y = [], []
+        for i in range(look_back, len(scaled_prices)):
+            X.append(scaled_prices[i-look_back:i, 0])
+            y.append(scaled_prices[i, 0])
+        X, y = np.array(X), np.array(y)
+        
+        if len(X) < 10:
+            return jsonify({'error': 'Not enough data points'}), 400
+        
+        split = int(0.8 * len(X))
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+        
+        results = []
+        model_configs = {
+            'RandomForest': RandomForestRegressor(n_estimators=100, random_state=42),
+            'SVM': SVR(kernel='rbf', C=1e3, gamma=0.1),
+            'DecisionTree': DecisionTreeRegressor(random_state=42),
+        }
+        
+        for name, model in model_configs.items():
+            try:
+                model.fit(X_train, y_train)
+                preds = model.predict(X_test)
+                
+                mae = float(mean_absolute_error(y_test, preds))
+                rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
+                r2 = float(r2_score(y_test, preds))
+                accuracy = max(0, round(r2 * 100, 1))
+                
+                # Inverse transform for price-level errors
+                y_test_prices = scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+                preds_prices = scaler.inverse_transform(preds.reshape(-1, 1)).flatten()
+                mae_price = float(np.mean(np.abs(y_test_prices - preds_prices)))
+                
+                results.append({
+                    'model': name,
+                    'accuracy': accuracy,
+                    'mae': round(mae, 4),
+                    'rmse': round(rmse, 4),
+                    'r2_score': round(r2, 4),
+                    'mae_price': round(mae_price, 2),
+                })
+                print(f"  ✅ {name}: R²={r2:.4f}, MAE=${mae_price:.2f}")
+            except Exception as e:
+                print(f"  ⚠️ {name} failed: {str(e)}")
+                results.append({'model': name, 'accuracy': 0, 'mae': 0, 'rmse': 0, 'r2_score': 0, 'mae_price': 0, 'error': str(e)})
+        
+        # LSTM
+        if LSTM_AVAILABLE:
+            try:
+                X_train_lstm = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+                X_test_lstm = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+                
+                lstm_model = Sequential([
+                    LSTM(50, return_sequences=True, input_shape=(look_back, 1)),
+                    Dropout(0.2),
+                    LSTM(50, return_sequences=False),
+                    Dropout(0.2),
+                    Dense(25),
+                    Dense(1)
+                ])
+                lstm_model.compile(optimizer='adam', loss='mean_squared_error')
+                lstm_model.fit(X_train_lstm, y_train, epochs=15, batch_size=32, verbose=0)
+                
+                preds = lstm_model.predict(X_test_lstm, verbose=0).flatten()
+                mae = float(mean_absolute_error(y_test, preds))
+                rmse = float(np.sqrt(mean_squared_error(y_test, preds)))
+                r2 = float(r2_score(y_test, preds))
+                accuracy = max(0, round(r2 * 100, 1))
+                
+                y_test_prices = scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+                preds_prices = scaler.inverse_transform(preds.reshape(-1, 1)).flatten()
+                mae_price = float(np.mean(np.abs(y_test_prices - preds_prices)))
+                
+                results.append({
+                    'model': 'LSTM',
+                    'accuracy': accuracy,
+                    'mae': round(mae, 4),
+                    'rmse': round(rmse, 4),
+                    'r2_score': round(r2, 4),
+                    'mae_price': round(mae_price, 2),
+                })
+                print(f"  ✅ LSTM: R²={r2:.4f}, MAE=${mae_price:.2f}")
+            except Exception as e:
+                print(f"  ⚠️ LSTM failed: {str(e)}")
+                results.append({'model': 'LSTM', 'accuracy': 0, 'mae': 0, 'rmse': 0, 'r2_score': 0, 'mae_price': 0, 'error': str(e)})
+        else:
+            results.append({'model': 'LSTM', 'accuracy': 0, 'mae': 0, 'rmse': 0, 'r2_score': 0, 'mae_price': 0, 'error': 'TensorFlow not installed'})
+        
+        # Sort by accuracy descending
+        results.sort(key=lambda x: x['accuracy'], reverse=True)
+        
+        return jsonify({
+            'symbol': stock_data['symbol'],
+            'models': results,
+            'data_points': len(X),
+            'test_size': len(X_test),
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Model comparison error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/predictions', methods=['GET'])
 @require_auth
 def get_user_predictions():
